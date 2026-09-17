@@ -18,4 +18,4 @@ The Figma + Miro Inspired Spatial Canvas & Interface Builder.
 4. **Icon Subsystem & SVG Baking**:
    - Comprehensive icon catalog (Lucide, Tabler, Material Icons, Feather).
    - Crisp, infinite-resolution vector rendering baked into Signed Distance Fields (SDFs) using GPU Jump Flooding Algorithms (`sdf_jfa`).
-5. **Real-Time Multiplayer Sync**: Pairs with `../sesh` for live multi-user cursors, collaborative note taking, and remote canvas sharing.
+5. **Real-Time Multiplayer Sync**: Pairs with `../../ecosystem/sesh` for live multi-user cursors, collaborative note taking, and remote canvas sharing.
