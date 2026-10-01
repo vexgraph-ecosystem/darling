@@ -17,12 +17,19 @@ struct Frame {
     int count, cap;
     Image *shot;         // reused capture buffer
     DisplayList *dl;     // reused paint list
-    int lastW, lastH;    // last rendered target size (skip a redundant resize)
+    int lastW, lastH;    // current target size — the single size authority
 };
 
-static void frame_resize_render(void *userdata) {
-    Frame_render((Frame *)userdata);   // re-layout + re-render every resize step
+// The ONE resize surface. The window's resize event calls only this; it resizes
+// everything: the render target, the layout canvas, and repaints. The canvas
+// grows with the window but never below its minimum, so growing reflows the
+// panels while shrinking holds them (they go out of bounds and clip).
+static void frame_on_resize(void *userdata) {
+    Frame *f = (Frame *)userdata;
+    Frame_setSize(f, Window_width(f->window), Window_height(f->window));
 }
+
+static Frame *s_active = NULL;   // the most recently created Frame (CAPTURE)
 
 Frame *Frame_2(const char *title, int widthPx, int heightPx) {
     // GPU rendering: the Vulkan backend draws the panels; capture reads them back.
@@ -42,13 +49,9 @@ Frame *Frame_2(const char *title, int widthPx, int heightPx) {
     f->shot = Image_0();
     f->dl = DisplayList_0();
     f->lastW = f->lastH = 0;
-    // Render on the resize cadence: AppKit runs its own nested tracking loop
-    // during a live drag, so the ambient Frame_run loop can't keep up. This hook
-    // re-lays-out + re-renders at the new size on EVERY geometry step — the
-    // window publishes the tick, the Frame draws it (the Continuous Real-Time
-    // Live Resize Law). Presentation goes synchronous inside Window_presentRGBA
-    // while Window_isLiveResizing() is true.
-    Window_setResizeRenderHook(f->window, frame_resize_render, f);
+    // ONE resize surface: the window reports a geometry step, we call Frame_setSize.
+    Window_setResizeRenderHook(f->window, frame_on_resize, f);
+    s_active = f;
     return f;
 }
 
@@ -96,8 +99,10 @@ void Frame_removePanels(Frame *frame) {
 }
 
 Rect Frame_root(const Frame *frame) {
-    if (!frame || !frame->window) return (Rect){0, 0, 0, 0};
-    return (Rect){0, 0, (float)Window_width(frame->window), (float)Window_height(frame->window)};
+    if (!frame) return (Rect){0, 0, 0, 0};
+    // the layout root IS the window (native px): panels anchor to the window and
+    // reflow on resize; anything spilling past the window edge is clipped.
+    return (Rect){0, 0, (float)frame->lastW, (float)frame->lastH};
 }
 
 void Frame_paint(const Frame *frame, DisplayList *dl) {
@@ -111,19 +116,23 @@ void Frame_paint(const Frame *frame, DisplayList *dl) {
     }
 }
 
+void Frame_setSize(Frame *frame, int widthPx, int heightPx) {
+    if (!frame || widthPx <= 0 || heightPx <= 0) return;
+    if (widthPx == frame->lastW && heightPx == frame->lastH) return;   // no-op
+    frame->lastW = widthPx;
+    frame->lastH = heightPx;
+    Graphics_resize((uint32_t)widthPx, (uint32_t)heightPx);
+    Frame_render(frame);
+}
+
 void Frame_render(Frame *frame) {
     if (!frame || !frame->window) return;
-    int wpx = Window_width(frame->window);
-    int hpx = Window_height(frame->window);
-    if (wpx <= 0 || hpx <= 0) return;
-
-    // Reallocate the target ONLY when the size actually changed; a steady window
-    // reuses its framebuffer, paint list and capture buffer every frame.
-    if (wpx != frame->lastW || hpx != frame->lastH) {
-        Graphics_resize((uint32_t)wpx, (uint32_t)hpx);
-        frame->lastW = wpx;
-        frame->lastH = hpx;
+    if (frame->lastW <= 0 || frame->lastH <= 0) {
+        Frame_setSize(frame, Window_width(frame->window), Window_height(frame->window));
+        return;
     }
+    int wpx = frame->lastW;
+    int hpx = frame->lastH;
     if (!Graphics_begin()) return;
     Graphics_clear(frame->background);
     DisplayList_clear(frame->dl);
@@ -140,8 +149,28 @@ void Frame_run(Frame *frame) {
     if (!frame || !frame->window) return;
     Window_show(frame->window);
     Frame_render(frame);                       // first paint
+    // Poll-then-park: drain everything queued (which also mirrors window
+    // state), then BLOCK until the OS has work. An idle window costs no CPU;
+    // input, moves and live-resize ticks wake us. (The Park Cost Law.)
     while (!Window_shouldClose(frame->window)) {
-        Window_pollEvents();                   // drain everything queued
-        usleep(8000);                          // bounded park (~8ms tick)
+        Window_pollEvents();                   // drain + reflect everything queued
+        if (Window_shouldClose(frame->window)) break;
+        Window_waitEvents(frame->window, 0);   // block until the next OS event
     }
+}
+
+// ── screenshots ─────────────────────────────────────────────────────────────
+Frame *Frame_active(void) { return s_active; }
+
+Image *Frame_capture(Frame *frame) {
+    if (!frame) return NULL;
+    Frame_render(frame);             // render the current state, then read it
+    return frame->shot;
+}
+
+bool Frame_savePNG(Frame *frame, const char *path) {
+    Image *img = Frame_capture(frame);
+    if (!img || !path) return false;
+    return Window_writePNG(Image_pixels(img), Image_stride(img),
+                           (int)Image_width(img), (int)Image_height(img), path);
 }

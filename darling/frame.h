@@ -4,6 +4,7 @@
 #include <stdbool.h>
 
 #include "graphics/graphics.h"   // graphvex R3: Rect, Color, DisplayList
+#include "image.h"               // graphvex R3: Image (CAPTURE returns one)
 #include "panel.h"               // graphvex R3: Panel (the UI component)
 #include "window/window.h"       // hotcwap R1: the OS window
 
@@ -37,11 +38,26 @@ int    Frame_count(const Frame *frame);
 Panel *Frame_panel(const Frame *frame, int index);
 void   Frame_removePanels(Frame *frame);
 
-// The frame's content rect in native px (what children anchor against).
+// The layout root in native px — what children anchor against. It IS the window:
+// panels reflow on resize, keeping their own size, and anything past the window
+// edge is clipped.
 Rect Frame_root(const Frame *frame);
+
+// THE one resize surface. The window's resize event calls ONLY this; it resizes
+// everything (the render target, the layout root) and repaints. Call it with the
+// window's native pixel size.
+void Frame_setSize(Frame *frame, int widthPx, int heightPx);
 
 void Frame_paint(const Frame *frame, DisplayList *dl);
 void Frame_render(Frame *frame);   // render + present one frame
 void Frame_run(Frame *frame);      // show the window and loop until it closes
+
+// ── screenshots ─────────────────────────────────────────────────────────────
+// Grab what a frame actually drew. Frame_capture re-renders and returns the
+// frame's RGBA8 Image (0xRRGGBBAA) — the graphvex CAPTURE(&image) macro is the
+// backend-level equivalent. Frame_savePNG writes it to disk for tests/agents.
+Frame *Frame_active(void);
+Image *Frame_capture(Frame *frame);
+bool   Frame_savePNG(Frame *frame, const char *path);
 
 #endif // DARLING_FRAME_H
